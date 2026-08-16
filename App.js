@@ -16,6 +16,7 @@ import * as Location from 'expo-location';
 
 import WakeWordService, { WakeWordEvent } from './src/wakeWordService';
 import { aiAssistant } from './src/AIAssistant';
+import { runAction, GameSpec } from './src/tools';
 
 const MODEL_DIR = 'assets/models';
 
@@ -36,6 +37,8 @@ export default function App() {
     embedding: string;
     wakeWord: string;
   } | null>(null);
+  const [game, setGame] = useState<GameSpec | null>(null);
+  const [gameFeedback, setGameFeedback] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -132,18 +135,9 @@ export default function App() {
           const result = await Openwakeword.processBuffer(float32Data, modelPaths);
 
           if (result && result.isWakingWord) {
-            const transcribedText = await aiAssistant.respond(
-              'User command activated'
-            );
-
-            if (transcribedText) {
-              setConversation(prev => [...prev, 'AI: ' + transcribedText.text]);
-              await aiAssistant.scheduleNotification(
-                'Assistant Response',
-                transcribedText.text,
-                5
-              );
-            }
+            // Placeholder command — replace with real STT later.
+            // For now we demonstrate the action layer with a sample prompt.
+            await sendToAI('What time is it?');
           }
         }
         setIsListening(false);
@@ -156,16 +150,40 @@ export default function App() {
     }
   }, [modelPaths]);
 
+  const handleAction = useCallback(async (text: string) => {
+    const action = await runAction(text);
+    if (!action.handled) return false;
+
+    setConversation(prev => [...prev, 'You: ' + text]);
+    setConversation(prev => [...prev, 'Klama: ' + action.message]);
+
+    if (action.game) {
+      setGame(action.game);
+      setGameFeedback('');
+    }
+
+    await aiAssistant.scheduleNotification('Klama AI', action.message, 5);
+    setStatusText('Ready');
+    return true;
+  }, []);
+
   const sendToAI = useCallback(async (text: string) => {
+    if (!text.trim()) return;
     if (!apiKey) {
       Alert.alert('Error', 'Please enter an API key first');
       return;
     }
+
+    // Try real device actions first (reminders, time, weather, search, games…)
+    const didAction = await handleAction(text);
+    if (didAction) return;
+
     setStatusText('Processing...');
     const response = await aiAssistant.respond(text);
 
     if (response) {
-      setConversation(prev => [...prev, 'AI: ' + response.text]);
+      setConversation(prev => [...prev, 'You: ' + text]);
+      setConversation(prev => [...prev, 'Klama: ' + response.text]);
       await aiAssistant.scheduleNotification(
         'Assistant Response',
         response.text,
@@ -173,7 +191,7 @@ export default function App() {
       );
     }
     setStatusText('Ready');
-  }, [apiKey]);
+  }, [apiKey, handleAction]);
 
   const trainCustomModel = useCallback(async (wordName: string) => {
     Alert.alert(
@@ -291,6 +309,119 @@ export default function App() {
       <View style={styles.wordSelect}>
         {renderWordButtons()}
       </View>
+
+      {game && (
+        <GamePanel
+          game={game}
+          feedback={gameFeedback}
+          setFeedback={setGameFeedback}
+          onClose={() => setGame(null)}
+        />
+      )}
+    </View>
+  );
+}
+
+function GamePanel({ game, feedback, setFeedback, onClose }: {
+  game: GameSpec;
+  feedback: string;
+  setFeedback: (s: string) => void;
+  onClose: () => void;
+}) {
+  const [guess, setGuess] = useState('');
+  const [rpsChoice, setRpsChoice] = useState('');
+
+  if (game.type === 'guess') {
+    return (
+      <View style={styles.gamePanel}>
+        <Text style={styles.gameTitle}>{game.title}</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Your guess (1-100)"
+          keyboardType="numeric"
+          value={guess}
+          onChangeText={setGuess}
+        />
+        <TouchableOpacity
+          style={styles.sendBtn}
+          onPress={() => {
+            const g = parseInt(guess, 10);
+            const ans = parseInt(game.answer || '', 10);
+            if (g === ans) setFeedback('Correct! 🎉');
+            else if (g < ans) setFeedback('Too low.');
+            else setFeedback('Too high.');
+          }}
+        >
+          <Text style={styles.sendText}>Guess</Text>
+        </TouchableOpacity>
+        <Text style={styles.gameFeedback}>{feedback}</Text>
+        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+          <Text style={styles.closeText}>Close</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (game.type === 'trivia') {
+    return (
+      <View style={styles.gamePanel}>
+        <Text style={styles.gameTitle}>{game.title}</Text>
+        <Text style={styles.triviaQ}>{game.content}</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Your answer"
+          value={guess}
+          onChangeText={setGuess}
+        />
+        <TouchableOpacity
+          style={styles.sendBtn}
+          onPress={() => {
+            if (guess.trim().toLowerCase() === (game.answer || '').toLowerCase())
+              setFeedback('Correct! 🎉');
+            else setFeedback('Not quite. Answer: ' + game.answer);
+          }}
+        >
+          <Text style={styles.sendText}>Answer</Text>
+        </TouchableOpacity>
+        <Text style={styles.gameFeedback}>{feedback}</Text>
+        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+          <Text style={styles.closeText}>Close</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // rps
+  const options = ['Rock', 'Paper', 'Scissors'];
+  const beats: Record<string, string> = {
+    Rock: 'Scissors',
+    Paper: 'Rock',
+    Scissors: 'Paper',
+  };
+  return (
+    <View style={styles.gamePanel}>
+      <Text style={styles.gameTitle}>{game.title}</Text>
+      <View style={styles.rpsRow}>
+        {options.map((o) => (
+          <TouchableOpacity
+            key={o}
+            style={styles.rpsBtn}
+            onPress={() => {
+              const cpu = options[Math.floor(Math.random() * 3)];
+              if (o === cpu) setFeedback('Draw! CPU also chose ' + cpu);
+              else if (beats[o] === cpu)
+                setFeedback('You win! CPU chose ' + cpu);
+              else setFeedback('You lose. CPU chose ' + cpu);
+            }}
+          >
+            <Text style={styles.rpsText}>{o}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <Text style={styles.gameFeedback}>{feedback}</Text>
+      <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+        <Text style={styles.closeText}>Close</Text>
+      </TouchableOpacity>
     </View>
   );
 }

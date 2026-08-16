@@ -18,7 +18,8 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "com.klama.ai"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -27,6 +28,9 @@
       "eas": {
         "projectId": "f48f0ced-eea8-415e-bb0e-1de7d0c4131b"
       }
-    }
+    },
+    "plugins": [
+      "expo-web-browser"
+    ]
   }
 }
