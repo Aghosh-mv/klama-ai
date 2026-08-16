@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,16 +7,37 @@ import {
   Alert,
   PermissionsAndroid,
   FlatList,
-  ScrollView,
   TextInput,
+  Platform,
+  Modal,
+  Pressable,
+  KeyboardAvoidingView,
+  Keyboard,
+  TouchableWithoutFeedback,
+  BackHandler,
 } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
 import * as BackgroundFetch from 'expo-background-fetch';
 import * as Location from 'expo-location';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import WakeWordService, { WakeWordEvent } from './src/wakeWordService';
 import { aiAssistant } from './src/AIAssistant';
-import { runAction, GameSpec, speak, getAssistantName, listenOnce, extractCommand, getStopWord } from './src/tools';
+import {
+  runAction,
+  GameSpec,
+  speak,
+  getAssistantName,
+  listenOnce,
+  extractCommand,
+  getStopWord,
+  setAssistantName,
+  setStopWord,
+} from './src/tools';
+import GamePanel from './src/GamePanel';
+import SetupWizard from './src/SetupWizard';
 
 const MODEL_DIR = 'assets/models';
 
@@ -31,86 +52,127 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
   const [statusText, setStatusText] = useState('Idle');
-  const [conversation, setConversation] = useState<string[]>([]);
-  const [modelPaths, setModelPaths] = useState<{
-    melspectrogram: string;
-    embedding: string;
-    wakeWord: string;
-  } | null>(null);
-  const [game, setGame] = useState<GameSpec | null>(null);
+  const [conversation, setConversation] = useState([]);
+  const [modelPaths, setModelPaths] = useState(null);
+  const [game, setGame] = useState(null);
   const [gameFeedback, setGameFeedback] = useState('');
+  const [showSetup, setShowSetup] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [assistantReady, setAssistantReady] = useState(false);
 
+  // Load saved settings on mount
   useEffect(() => {
     (async () => {
-      // Request microphone permission on Android
+      // Check if first launch (no API key saved)
+      const savedKey = aiAssistant.getMemory('api_key') || '';
+      const savedName = aiAssistant.getMemory('assistant_name') || null;
+      const setupComplete = aiAssistant.getMemory('setup_complete') === 'true';
+
+      if (savedKey) setAPIKey(savedKey);
+      if (!setupComplete) {
+        setShowSetup(true);
+      } else if (savedName) {
+        setAssistantReady(true);
+        // Start wake word if models available
+        if (modelPaths) {
+          const started = await WakeWordService.initialize(modelPaths);
+          if (started) {
+            WakeWordService.startListening(handleWakeWord);
+            setStatusText('Listening for "' + savedName + '"...');
+          }
+        }
+      }
+    })();
+  }, [modelPaths]);
+
+  // Request permissions on Android
+  useEffect(() => {
+    (async () => {
       if (Platform.OS === 'android') {
         try {
           const status = await PermissionsAndroid.request(
             PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
             {
-              title: 'Wake Word Assistant',
-              message: 'This app needs microphone access to detect wake words and voice commands',
+              title: 'Microphone Access',
+              message: 'Needed for wake word detection',
               buttonNeutral: 'Ask Later',
               buttonNegative: 'Cancel',
               buttonPositive: 'OK',
             }
           );
           if (status !== PermissionsAndroid.RESULTS.GRANTED) {
-            Alert.alert('Permission Required', 'Microphone permission is required for wake word detection');
+            Alert.alert('Permission Required', 'Microphone access is needed for wake word detection');
           }
         } catch (err) {
-          console.error('Permission request error:', err);
+          console.error('Permission error:', err);
         }
       }
     })();
   }, []);
 
+  // Handle back button
   useEffect(() => {
-    // Initialize notifications
-    Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShow: true,
-        refresh: false,
-      }),
-    });
+    const backHandler = BackHandler.addEventListener('hardwareBackExit', () => true);
+    return () => backHandler.remove();
   }, []);
 
-  const loadModels = useCallback(async (wordName: string) => {
-    const modelMap: Record<string, string> = {
+  const handleSetupComplete = useCallback((settings) => {
+    const { apiKey: key, assistantName, wakeWord, stopWord } = settings;
+
+    if (!key || !assistantName || !wakeWord) {
+      Alert.alert('Setup Incomplete', 'Please fill in all required fields');
+      return;
+    }
+
+    setAPIKey(key);
+    setAssistantName(assistantName);
+    if (stopWord) setStopWord(stopWord);
+
+    aiAssistant.setMemory('api_key', key);
+    aiAssistant.setMemory('assistant_name', assistantName);
+    aiAssistant.setMemory('wake_word', wakeWord);
+    aiAssistant.setMemory('setup_complete', 'true');
+
+    setShowSetup(false);
+    setAssistantReady(true);
+    loadModels(wakeWord);
+  }, []);
+
+  const loadModels = useCallback(async (wordName) => {
+    const modelMap = {
       Jarvis: 'hey_jarvis.onnx',
       Assistant: 'hey_assistant.onnx',
       Computer: 'hey_computer.onnx',
     };
 
     const modelFile = modelMap[wordName];
-    if (!modelFile) {
-      Alert.alert('Error', 'Unknown wake word model');
-      return;
-    }
+    if (!modelFile) return;
 
     const basePath = `${MODEL_DIR}/${wordName.toLowerCase()}`;
-    setModelPaths(WakeWordService.getDefaultModelPaths(basePath));
+    const paths = WakeWordService.getDefaultModelPaths(basePath);
+    setModelPaths(paths);
 
-    const loaded = await WakeWordService.initialize(setModelPaths!);
+    const loaded = await WakeWordService.initialize(paths);
     if (loaded) {
-      setStatusText(`Model loaded: ${wordName}`);
-      Alert.alert('Success', `Wake word model "${wordName}" loaded successfully!`);
+      setStatusText(`Ready! Say "${wordName}..."`);
+      WakeWordService.startListening(handleWakeWord);
     }
-  }, []);
+  }, [handleWakeWord]);
 
-  const handleWakeWord = useCallback(async (event: WakeWordEvent) => {
+  const handleWakeWord = useCallback(async (event) => {
     setWakeWordDetected(true);
-    setStatusText(`${event.detectedWord} heard — say "${getStopWord()}" to send`);
-    setConversation(prev => [
-      ...prev,
-      `${event.detectedWord} woke up. Listening until stop word...`,
-    ]);
-    speak(`Yes? Say ${getStopWord()} when you're done.`);
+    const stopWord = getStopWord();
+    const listenPrompt = stopWord
+      ? `Say "${stopWord}" when you're done`
+      : 'Speak your command';
+    setStatusText(`${event.detectedWord} heard — ${listenPrompt}`);
+    setConversation(prev => [...prev, `${event.detectedWord} woke up. Listening...`]);
+    if (!isMuted) {
+      speak(`Yes? ${stopWord ? `Say ${stopWord} when done.` : 'Go ahead.'}`);
+    }
 
     setIsListening(true);
-
-    // On-device speech-to-text, then gate on the stop word.
-    const transcript = await listenOnce('Speak, then say ' + getStopWord());
+    const transcript = await listenOnce(listenPrompt);
     setIsListening(false);
 
     if (!transcript) {
@@ -118,9 +180,9 @@ export default function App() {
       return;
     }
 
-    const command = extractCommand(transcript);
+    const command = stopWord ? extractCommand(transcript) : transcript.trim();
     if (!command) {
-      setStatusText('Heard stop word but no command.');
+      setStatusText('No command detected.');
       return;
     }
 
@@ -135,379 +197,257 @@ export default function App() {
       setStatusText('Processing...');
       const response = await aiAssistant.respond(command);
       if (response) {
-        setConversation(prev => [
-          ...prev,
-          getAssistantName() + ': ' + response.text,
-        ]);
-        speak(response.text);
+        setConversation(prev => [...prev, getAssistantName() + ': ' + response.text]);
+        if (!isMuted) speak(response.text);
         await aiAssistant.scheduleNotification('Klama AI', response.text, 5);
       }
-      setStatusText('Ready');
     }
-  }, [apiKey, handleAction]);
+    setStatusText('Listening...');
+  }, [apiKey, handleAction, isMuted]);
 
-  const handleAction = useCallback(async (text: string) => {
+  const handleAction = useCallback(async (text) => {
     const action = await runAction(text);
     if (!action.handled) return false;
 
-    setConversation(prev => [...prev, 'You: ' + text]);
-    setConversation(prev => [...prev, getAssistantName() + ': ' + action.message]);
+    setConversation(prev => [
+      ...prev,
+      'You: ' + text,
+      getAssistantName() + ': ' + action.message,
+    ]);
 
     if (action.game) {
       setGame(action.game);
       setGameFeedback('');
     }
 
-    speak(action.message);
+    if (!isMuted) speak(action.message);
     await aiAssistant.scheduleNotification('Klama AI', action.message, 5);
-    setStatusText('Ready');
+    setStatusText('Listening...');
     return true;
-  }, []);
+  }, [isMuted]);
 
-  const sendToAI = useCallback(async (text: string) => {
+  const sendToAI = useCallback(async (text) => {
     if (!text.trim()) return;
     if (!apiKey) {
-      Alert.alert('Error', 'Please enter an API key first');
+      Alert.alert('Error', 'Please enter an AI API key');
       return;
     }
 
-    // Try real device actions first (reminders, time, weather, search, games…)
     const didAction = await handleAction(text);
     if (didAction) return;
 
     setStatusText('Processing...');
     const response = await aiAssistant.respond(text);
-
     if (response) {
-      setConversation(prev => [...prev, 'You: ' + text]);
-      setConversation(prev => [...prev, getAssistantName() + ': ' + response.text]);
-      speak(response.text);
-      await aiAssistant.scheduleNotification(
-        'Assistant Response',
-        response.text,
-        5
-      );
+      setConversation(prev => [
+        ...prev,
+        'You: ' + text,
+        getAssistantName() + ': ' + response.text,
+      ]);
+      if (!isMuted) speak(response.text);
+      await aiAssistant.scheduleNotification('Assistant Response', response.text, 5);
     }
-    setStatusText('Ready');
-  }, [apiKey, handleAction]);
-
-  const trainCustomModel = useCallback(async (wordName: string) => {
-    Alert.alert(
-      'Train Custom Model',
-      'Custom wake word training is available via the openWakeWord Colab notebook. Would you like to open it?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Open Colab',
-          onPress: () => {
-            window.open('https://colab.research.google.com/drive/1q1oe2zOyZp7UsB3jJiQ1IFn8z5YfjwEb?usp=sharing', '_system');
-          },
-        },
-      ]
-    );
-  }, []);
-
-  useEffect(() => {
-    // Initialize background fetch for always-on listening (when app is in background)
-    BackgroundFetch.registerTaskAsync('wake-word-detector', {
-      // This will be called when the system wants to fetch
-      // In a real implementation, you'd check for wake word here
-      // minBackgroundFetchInterval: 15 * 60, // 15 minutes
-    });
-  }, []);
-
-  const startWakeWordListening = useCallback(() => {
-    if (!modelPaths) {
-      Alert.alert('Error', 'Please load a wake word model first');
-      return;
-    }
-    WakeWordService.startListening(handleWakeWord);
-    setIsListening(true);
-    setStatusText('Listening for wake word...');
-  }, [handleWakeWord, modelPaths]);
-
-  const stopWakeWordListening = useCallback(() => {
-    WakeWordService.stopListening();
-    setIsListening(false);
-    setStatusText('Idle');
-  }, []);
-
-  const renderWordButtons = () => {
-    if (!modelPaths) {
-      return DEFAULT_WORDS.map((word) => (
-        <TouchableOpacity
-          key={word.name}
-          style={[styles.wordBtn, styles.inactiveWord]}
-          onPress={() => loadModels(word.name)}
-        >
-          <Text style={styles.wordText}>{word.name}</Text>
-        </TouchableOpacity>
-      ));
-    }
-    // If models are loaded, show the custom word buttons
-    return [
-      <TouchableOpacity
-        key="jarvis"
-        style={[styles.wordBtn, styles.activeWord]}
-        onPress={() => loadModels('Jarvis')}
-      >
-        <Text style={styles.wordText}>Jarvis</Text>
-      </TouchableOpacity>,
-      <TouchableOpacity
-        key="assistant"
-        style={[styles.wordBtn, {}]}
-        onPress={() => loadModels('Assistant')}
-      >
-        <Text style={styles.wordText}>Assistant</Text>
-      </TouchableOpacity>,
-      <TouchableOpacity
-        key="computer"
-        style={[styles.wordBtn, {}]}
-        onPress={() => loadModels('Computer')}
-      >
-        <Text style={styles.wordText}>Computer</Text>
-      </TouchableOpacity>,
-    ];
-  };
+    setStatusText('Listening...');
+  }, [apiKey, handleAction, isMuted]);
 
   return (
     <View style={styles.container}>
-      <StatusBar style="dark" />
-
-      <FlatList
-        data={conversation}
-        renderItem={({ item }) => <Text style={styles.message}>{item}</Text>}
-        keyExtractor={(item, index) => index.toString()}
-        contentContainerStyle={styles.list}
-      />
-
-      <View style={styles.inputArea}>
-        <TextInput
-          placeholder="Enter your AI API key (Gemini/OpenAI)..."
-          value={apiKey}
-          onChangeText={setAPIKey}
-          style={styles.input}
-          returnKeyType="send"
-          onSubmitEditing={() => sendToAI(apiKey)}
+      <StatusBar style="light" />
+      <LinearGradient colors={['#1a1a2e', '#16213e']} style={styles.gradient}>
+        {/* Setup Wizard */}
+        <SetupWizard
+          visible={showSetup}
+          onComplete={handleSetupComplete}
+          onSkip={() => setShowSetup(false)}
         />
-        <TouchableOpacity style={styles.sendBtn} onPress={() => sendToAI(apiKey)}>
-          <Text style={styles.sendText}>Send</Text>
-        </TouchableOpacity>
-      </View>
 
-      <View style={styles.buttons}>
-        <TouchableOpacity style={[styles.button, isListening ? styles.active : styles.inactive]} onPress={startWakeWordListening}>
-          <Text style={styles.buttonText}>Start Listening</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.button, !isListening ? styles.active : styles.inactive]} onPress={stopWakeWordListening}>
-          <Text style={styles.buttonText}>Stop</Text>
-        </TouchableOpacity>
-      </View>
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerTop}>
+            <Text style={styles.headerTitle}>KLAMA.AI</Text>
+            <Text style={styles.headerSubtitle}>Your personal voice assistant</Text>
+          </View>
+          <View style={styles.headerControls}>
+            <TouchableOpacity
+              style={[styles.iconBtn, isMuted && styles.iconBtnActive]}
+              onPress={() => setIsMuted(!isMuted)}
+            >
+              <MaterialCommunityIcons
+                name={isMuted ? "microphone-off" : "microphone"}
+                size={24}
+                color="#fff"
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => setShowSetup(true)}
+            >
+              <MaterialCommunityIcons name="cog" size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
 
-      <View style={styles.wordSelect}>
-        {renderWordButtons()}
-      </View>
+        {/* Status */}
+        <View style={styles.statusBar}>
+          <View style={[styles.statusDot, isListening && styles.statusActive]} />
+          <Text style={styles.statusText}>{statusText}</Text>
+        </View>
 
-      {game && (
-        <GamePanel
-          game={game}
-          feedback={gameFeedback}
-          setFeedback={setGameFeedback}
-          onClose={() => setGame(null)}
+        {/* Conversation */}
+        <FlatList
+          data={conversation}
+          renderItem={({ item }) => (
+            <View style={styles.messageBubble}>
+              <Text style={styles.messageText}>{item}</Text>
+            </View>
+          )}
+          keyExtractor={(item, index) => index.toString()}
+          contentContainerStyle={styles.messageList}
         />
-      )}
-    </View>
-  );
-}
 
-function GamePanel({ game, feedback, setFeedback, onClose }) {
-  const [guess, setGuess] = useState('');
-  const [rpsChoice, setRpsChoice] = useState('');
+        {/* Game Panel */}
+        {game && (
+          <GamePanel
+            game={game}
+            feedback={gameFeedback}
+            setFeedback={setGameFeedback}
+            onClose={() => setGame(null)}
+          />
+        )}
 
-  if (game.type === 'guess') {
-    return (
-      <View style={styles.gamePanel}>
-        <Text style={styles.gameTitle}>{game.title}</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Your guess (1-100)"
-          keyboardType="numeric"
-          value={guess}
-          onChangeText={setGuess}
-        />
-        <TouchableOpacity
-          style={styles.sendBtn}
-          onPress={() => {
-            const g = parseInt(guess, 10);
-            const ans = parseInt(game.answer || '', 10);
-            if (g === ans) setFeedback('Correct! 🎉');
-            else if (g < ans) setFeedback('Too low.');
-            else setFeedback('Too high.');
-          }}
+        {/* Input Area */}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.inputWrapper}
         >
-          <Text style={styles.sendText}>Guess</Text>
-        </TouchableOpacity>
-        <Text style={styles.gameFeedback}>{feedback}</Text>
-        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-          <Text style={styles.closeText}>Close</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+            <View style={styles.inputContainer}>
+              <TextInput
+                placeholder="Type a command..."
+                value={apiKey ? '' : apiKey}
+                onChangeText={setAPIKey}
+                style={styles.textInput}
+                placeholderTextColor="#888"
+                onSubmitEditing={({ nativeEvent }) => sendToAI(nativeEvent.text)}
+              />
+              <TouchableOpacity
+                style={[styles.sendBtn, isListening && styles.sendBtnActive]}
+                onPress={sendToAI}
+                disabled={!apiKey}
+              >
+                <MaterialCommunityIcons name="send" size={20} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
 
-  if (game.type === 'trivia') {
-    return (
-      <View style={styles.gamePanel}>
-        <Text style={styles.gameTitle}>{game.title}</Text>
-        <Text style={styles.triviaQ}>{game.content}</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Your answer"
-          value={guess}
-          onChangeText={setGuess}
-        />
-        <TouchableOpacity
-          style={styles.sendBtn}
-          onPress={() => {
-            if (guess.trim().toLowerCase() === (game.answer || '').toLowerCase())
-              setFeedback('Correct! 🎉');
-            else setFeedback('Not quite. Answer: ' + game.answer);
-          }}
-        >
-          <Text style={styles.sendText}>Answer</Text>
-        </TouchableOpacity>
-        <Text style={styles.gameFeedback}>{feedback}</Text>
-        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-          <Text style={styles.closeText}>Close</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // rps
-  const options = ['Rock', 'Paper', 'Scissors'];
-  const beats: Record<string, string> = {
-    Rock: 'Scissors',
-    Paper: 'Rock',
-    Scissors: 'Paper',
-  };
-  return (
-    <View style={styles.gamePanel}>
-      <Text style={styles.gameTitle}>{game.title}</Text>
-      <View style={styles.rpsRow}>
-        {options.map((o) => (
-          <TouchableOpacity
-            key={o}
-            style={styles.rpsBtn}
-            onPress={() => {
-              const cpu = options[Math.floor(Math.random() * 3)];
-              if (o === cpu) setFeedback('Draw! CPU also chose ' + cpu);
-              else if (beats[o] === cpu)
-                setFeedback('You win! CPU chose ' + cpu);
-              else setFeedback('You lose. CPU chose ' + cpu);
-            }}
-          >
-            <Text style={styles.rpsText}>{o}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <Text style={styles.gameFeedback}>{feedback}</Text>
-      <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-        <Text style={styles.closeText}>Close</Text>
-      </TouchableOpacity>
+          {/* Quick Actions */}
+          <View style={styles.actionGrid}>
+            {[
+              { icon: 'clock-outline', label: 'Time', cmd: 'what time is it' },
+              { icon: 'weather-partly-cloudy', label: 'Weather', cmd: 'what is the weather' },
+              { icon: 'calendar-clock', label: 'Reminder', cmd: 'remind me to call mom in 30 minutes' },
+              { icon: 'weather-lightning', label: 'Game', cmd: 'let us play trivia' },
+            ].map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.actionBtn}
+                onPress={() => sendToAI(item.cmd)}
+              >
+                <MaterialCommunityIcons name={item.icon} size={24} color="#00d4ff" />
+                <Text style={styles.actionLabel}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </KeyboardAvoidingView>
+      </LinearGradient>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-    padding: 20,
-  },
-  message: {
-    marginBottom: 8,
-    padding: 10,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    maxWidth: '80%',
-    marginRight: 'auto',
-    marginLeft: 'auto',
-  },
-  list: {
-    maxHeight: 200,
-    paddingBottom: 10,
-  },
-  inputArea: {
+  container: { flex: 1 },
+  gradient: { flex: 1, paddingTop: 50 },
+  header: {
     flexDirection: 'row',
-    marginTop: 20,
-    paddingBottom: 20,
+    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 15,
   },
-  input: {
+  headerTop: { flex: 1 },
+  headerTitle: { color: '#00d4ff', fontSize: 24, fontWeight: 'bold' },
+  headerSubtitle: { color: '#888', fontSize: 13, marginTop: 2 },
+  headerControls: { flexDirection: 'row', gap: 10 },
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#23375c',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBtnActive: { backgroundColor: '#00d4ff' },
+  statusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 15,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#555',
+    marginRight: 8,
+  },
+  statusActive: { backgroundColor: '#00ff88' },
+  statusText: { color: '#ccc', fontSize: 14 },
+  messageList: { padding: 20, paddingBottom: 10 },
+  messageBubble: {
+    maxWidth: '85%',
+    padding: 14,
+    borderRadius: 18,
+    marginBottom: 10,
+    backgroundColor: '#23375c',
+    alignSelf: 'flex-start',
+  },
+  messageText: { color: '#e0e0e0', fontSize: 15, lineHeight: 20 },
+  inputWrapper: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    gap: 8,
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  textInput: {
     flex: 1,
-    borderColor: '#ccc',
-    borderWidth: 1,
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    height: 50,
+    backgroundColor: '#23375c',
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    color: '#fff',
     fontSize: 16,
   },
   sendBtn: {
-    backgroundColor: '#0066ff',
-    paddingHorizontal: 20,
-    borderRadius: 20,
-    marginHorizontal: 8,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#00d4ff',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  sendText: {
-    color: '#fff',
-    fontWeight: 'bold',
-  },
-  buttons: {
+  sendBtnActive: { backgroundColor: '#0099cc' },
+  actionGrid: {
     flexDirection: 'row',
-    marginTop: 20,
+    justifyContent: 'space-between',
+    marginTop: 15,
+  },
+  actionBtn: {
     alignItems: 'center',
+    gap: 6,
   },
-  button: {
-    flex: 1,
-    padding: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginHorizontal: 4,
-  },
-  active: {
-    backgroundColor: '#0066ff',
-  },
-  inactive: {
-    backgroundColor: '#666',
-  },
-  buttonText: {
-    color: '#fff',
-    textAlign: 'center',
-    fontWeight: 'bold',
-  },
-  wordSelect: {
-    marginTop: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  wordBtn: {
-    flex: 1,
-    padding: 8,
-    borderRadius: 6,
-    marginHorizontal: 2,
-    backgroundColor: '#e0e0e0',
-  },
-  activeWord: {
-    backgroundColor: '#0066ff',
-  },
-  inactiveWord: {
-    backgroundColor: '#ccc',
-  },
-  wordText: {
-    color: '#333',
-    textAlign: 'center',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
+  actionLabel: { color: '#aaa', fontSize: 12, marginTop: 4 },
 });

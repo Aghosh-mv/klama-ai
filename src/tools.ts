@@ -426,7 +426,7 @@ export function setStopWord(word: string): string {
 }
 
 export function getStopWord(): string {
-  return aiAssistant.getMemory('stop_word') || 'pip';
+  return aiAssistant.getMemory('stop_word') || ''; // "" = disabled (process immediately)
 }
 
 // --- On-device speech-to-text (Android) ---
