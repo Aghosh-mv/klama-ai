@@ -16,7 +16,7 @@ import * as Location from 'expo-location';
 
 import WakeWordService, { WakeWordEvent } from './src/wakeWordService';
 import { aiAssistant } from './src/AIAssistant';
-import { runAction, GameSpec } from './src/tools';
+import { runAction, GameSpec, speak, getAssistantName } from './src/tools';
 
 const MODEL_DIR = 'assets/models';
 
@@ -155,13 +155,14 @@ export default function App() {
     if (!action.handled) return false;
 
     setConversation(prev => [...prev, 'You: ' + text]);
-    setConversation(prev => [...prev, 'Klama: ' + action.message]);
+    setConversation(prev => [...prev, getAssistantName() + ': ' + action.message]);
 
     if (action.game) {
       setGame(action.game);
       setGameFeedback('');
     }
 
+    speak(action.message);
     await aiAssistant.scheduleNotification('Klama AI', action.message, 5);
     setStatusText('Ready');
     return true;
@@ -183,7 +184,8 @@ export default function App() {
 
     if (response) {
       setConversation(prev => [...prev, 'You: ' + text]);
-      setConversation(prev => [...prev, 'Klama: ' + response.text]);
+      setConversation(prev => [...prev, getAssistantName() + ': ' + response.text]);
+      speak(response.text);
       await aiAssistant.scheduleNotification(
         'Assistant Response',
         response.text,
@@ -285,7 +287,7 @@ export default function App() {
 
       <View style={styles.inputArea}>
         <TextInput
-          placeholder="Enter Gemini API Key..."
+          placeholder="Enter your AI API key (Gemini/OpenAI)..."
           value={apiKey}
           onChangeText={setAPIKey}
           style={styles.input}

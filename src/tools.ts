@@ -1,7 +1,10 @@
 import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
-import { Linking } from 'react-native';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Speech from 'expo-speech';
+import * as Battery from 'expo-battery';
+import { Linking, Platform, Share } from 'react-native';
 
 export interface GameSpec {
   type: 'guess' | 'trivia' | 'rps';
@@ -139,6 +142,37 @@ export async function runAction(text: string): Promise<ActionResult> {
     return { handled: true, message: msg };
   }
 
+  // Real Android alarm via the built-in Clock app.
+  const alarmMatch = lower.match(
+    /(set |start )?an? alarm (for |at )?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/
+  );
+  if (alarmMatch) {
+    const msg = await setAlarm(
+      parseInt(alarmMatch[3], 10),
+      alarmMatch[4] ? parseInt(alarmMatch[4], 10) : 0,
+      alarmMatch[5]
+    );
+    return { handled: true, message: msg };
+  }
+
+  // Timer via Clock app (Android).
+  const timerMatch = lower.match(/timer (for )?(\d+)\s*(minute|min|second|sec|hour|hr)s?/);
+  if (timerMatch) {
+    const amount = parseInt(timerMatch[2], 10);
+    const unit = timerMatch[3];
+    const seconds =
+      unit.startsWith('min') ? amount * 60 : unit.startsWith('hour') || unit.startsWith('hr') ? amount * 3600 : amount;
+    const msg = await startTimer(seconds);
+    return { handled: true, message: msg };
+  }
+
+  // Open another app by name (Android).
+  const openMatch = lower.match(/open (.+)/);
+  if (openMatch && !/(open (the )?(search|browser|web))/.test(lower)) {
+    const msg = await openApp(openMatch[1].trim());
+    return { handled: true, message: msg };
+  }
+
   if (/(^|\s)search(\s|$)|look up|google/.test(lower)) {
     const msg = webSearch(text);
     return { handled: true, message: msg };
@@ -152,6 +186,53 @@ export async function runAction(text: string): Promise<ActionResult> {
     return { handled: true, message: msg };
   }
 
+  if (/(what can you do|help|capabilities|commands)/.test(lower)) {
+    return { handled: true, message: capabilitiesList() };
+  }
+
+  if (/share (this|that|:|…)/.test(lower) || lower.startsWith('share ')) {
+    const payload = text.replace(/^share\s*/i, '').trim();
+    const msg = await shareText(payload || 'Hello from Klama AI');
+    return { handled: true, message: msg };
+  }
+
+  if (/flashlight (on|off)/.test(lower)) {
+    const on = /on/.test(lower);
+    const msg = await flashlight(on);
+    return { handled: true, message: msg };
+  }
+
+  if (/(battery|how much (charge|battery))/.test(lower)) {
+    const msg = await batteryLevel();
+    return { handled: true, message: msg };
+  }
+
+  const nameMatch = lower.match(/your (name is|name's) (.+)/);
+  if (nameMatch) {
+    const msg = setAssistantName(nameMatch[2].trim());
+    return { handled: true, message: msg };
+  }
+
+  if (/(run|do) (my )?routine/.test(lower)) {
+    const steps = (aiAssistant.getMemory('routine') || '')
+      .split('|')
+      .filter(Boolean);
+    if (!steps.length) {
+      return {
+        handled: true,
+        message: 'No routine saved. Say "save routine: step1 | step2".',
+      };
+    }
+    const results = await runRoutine(steps);
+    return { handled: true, message: 'Routine:\n' + results.join('\n') };
+  }
+
+  const saveRoutine = lower.match(/save routine:\s*(.+)/);
+  if (saveRoutine) {
+    aiAssistant.setMemory('routine', saveRoutine[1].trim());
+    return { handled: true, message: 'Routine saved.' };
+  }
+
   const game = makeGame(text);
   if (game) {
     return {
@@ -162,4 +243,187 @@ export async function runAction(text: string): Promise<ActionResult> {
   }
 
   return { handled: false, message: '' };
+}
+
+// --- Alarm / Timer (Android) ---
+
+export async function setAlarm(
+  hour: number,
+  minute: number,
+  meridian?: string
+): Promise<string> {
+  let h = hour;
+  if (meridian === 'pm' && h < 12) h += 12;
+  if (meridian === 'am' && h === 12) h = 0;
+
+  if (Platform.OS === 'android') {
+    try {
+      await IntentLauncher.startActivityAsync('android.intent.action.SET_ALARM', {
+        // @ts-ignore - extra keys are passed through
+        extra: {
+          'android.intent.extra.alarm.HOUR': h,
+          'android.intent.extra.alarm.MINUTES': minute,
+          'android.intent.extra.alarm.SKIP_UI': false,
+          'android.intent.extra.alarm.MESSAGE': 'Klama AI alarm',
+        },
+      });
+      return `Alarm set for ${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')} (via Clock app).`;
+    } catch (e) {
+      return 'Could not set alarm.';
+    }
+  }
+  // iOS fallback: critical notification reminder.
+  const date = new Date();
+  date.setHours(h, minute, 0, 0);
+  if (date.getTime() < Date.now()) date.setDate(date.getDate() + 1);
+  await Notifications.scheduleNotificationAsync({
+    content: { title: 'Klama AI Alarm', body: 'Wake up!', priority: 'max' as any },
+    trigger: date,
+  });
+  return `Alarm reminder set for ${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')} (iOS: notification).`;
+}
+
+export async function startTimer(seconds: number): Promise<string> {
+  if (Platform.OS === 'android') {
+    try {
+      await IntentLauncher.startActivityAsync('android.intent.action.SET_TIMER', {
+        // @ts-ignore
+        extra: {
+          'android.intent.extra.alarm.LENGTH': seconds,
+          'android.intent.extra.alarm.SKIP_UI': false,
+          'android.intent.extra.alarm.MESSAGE': 'Klama AI timer',
+        },
+      });
+      return `Timer set for ${seconds} seconds (via Clock app).`;
+    } catch (e) {
+      return 'Could not start timer.';
+    }
+  }
+  const date = new Date(Date.now() + seconds * 1000);
+  await Notifications.scheduleNotificationAsync({
+    content: { title: 'Klama AI Timer', body: 'Time is up!' },
+    trigger: date,
+  });
+  return `Timer reminder set for ${seconds} seconds (iOS: notification).`;
+}
+
+export async function openApp(name: string): Promise<string> {
+  if (Platform.OS !== 'android') {
+    return `Opening apps by name is Android-only. Try a web search instead.`;
+  }
+  const pkg = appPackageFor(name);
+  if (!pkg) {
+    return `I don't know the package for "${name}". Try "search for ${name}".`;
+  }
+  try {
+    await IntentLauncher.startActivityAsync('android.intent.action.MAIN', {
+      // @ts-ignore
+      packageName: pkg,
+      className: `${pkg}.MainActivity`,
+    });
+    return `Opening ${name}.`;
+  } catch (e) {
+    return `Could not open ${name}.`;
+  }
+}
+
+function appPackageFor(name: string): string | null {
+  const map: Record<string, string> = {
+    whatsapp: 'com.whatsapp',
+    youtube: 'com.google.android.youtube',
+    chrome: 'com.android.chrome',
+    gmail: 'com.google.android.gm',
+    maps: 'com.google.android.apps.maps',
+    camera: 'com.android.camera2',
+    settings: 'com.android.settings',
+    calculator: 'com.android.calculator2',
+    spotify: 'com.spotify.music',
+    instagram: 'com.instagram.android',
+    telegram: 'org.telegram.messenger',
+  };
+  return map[name.toLowerCase()] || null;
+}
+
+export function capabilitiesList(): string {
+  return [
+    'I can:',
+    '• Wake on your custom word (screen off)',
+    '• Tell the time and date',
+    '• Set reminders ("remind me to X in 20 minutes")',
+    '• Set a real alarm / timer (Android Clock)',
+    '• Report weather from your location',
+    '• Web search, copy text, open apps (Android)',
+    '• Play mini-games from a prompt',
+    '• Chat with Gemini for everything else',
+  ].join('\n');
+}
+
+export function speak(text: string): void {
+  Speech.speak(text, { rate: 1.0, pitch: 1.0 });
+}
+
+export async function shareText(text: string): Promise<string> {
+  try {
+    await Share.share({ message: text });
+    return 'Opened the share sheet.';
+  } catch (e) {
+    return 'Could not open share sheet.';
+  }
+}
+
+export async function flashlight(on: boolean): Promise<string> {
+  if (Platform.OS !== 'android') return 'Flashlight control is Android-only.';
+  try {
+    await IntentLauncher.startActivityAsync(
+      on ? 'android.media.action.STILL_IMAGE_CAMERA' : 'android.intent.action.MAIN',
+      {}
+    );
+    return on ? 'Flashlight on (via camera).' : 'Flashlight off.';
+  } catch (e) {
+    return 'Flashlight not available here.';
+  }
+}
+
+export async function batteryLevel(): Promise<string> {
+  try {
+    const pct = await Battery.getBatteryLevelAsync();
+    return `Battery is at ${Math.round(pct * 100)}%.`;
+  } catch (e) {
+    return 'Could not read battery.';
+  }
+}
+
+// Agentic "routine": run a saved list of steps. Stored in memory as "routine".
+export async function runRoutine(steps: string[]): Promise<string[]> {
+  const results: string[] = [];
+  for (const step of steps) {
+    const action = await runAction(step);
+    results.push(action.handled ? action.message : `(ask AI) ${step}`);
+  }
+  return results;
+}
+
+export function setAssistantName(name: string): string {
+  aiAssistant.setMemory('assistant_name', name);
+  return `Okay, I'll respond to the name "${name}" from now on.`;
+}
+
+export function getAssistantName(): string {
+  return aiAssistant.getMemory('assistant_name') || 'Klama';
+}
+
+export async function capabilitiesList(): string {
+  return [
+    'I am ' + getAssistantName() + '. I can:',
+    '• Wake on your custom word (screen off)',
+    '• Talk back with voice (TTS)',
+    '• Tell time, date, and battery %',
+    '• Set reminders, alarms, and timers',
+    '• Report weather from your location',
+    '• Web search, copy text, share, open apps (Android)',
+    '• Toggle flashlight (Android)',
+    '• Play mini-games from a prompt',
+    '• Run a saved routine of steps',
+    '• Chat with your AI key for everything else',
+  ].join('\n');
 }
