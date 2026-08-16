@@ -4,7 +4,17 @@ import * as Clipboard from 'expo-clipboard';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Speech from 'expo-speech';
 import * as Battery from 'expo-battery';
+import * as SQLite from 'expo-sqlite';
 import { Linking, Platform, Share } from 'react-native';
+
+const db = SQLite.openDatabase('klama.db');
+
+// Initialize table
+db.transaction((tx) => {
+  tx.executeSql(
+    'CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT, text TEXT, timestamp INTEGER)'
+  );
+});
 
 export interface GameSpec {
   type: 'guess' | 'trivia' | 'rps';
@@ -364,8 +374,78 @@ export function capabilitiesList(): string {
   ].join('\n');
 }
 
-export function speak(text: string): void {
-  Speech.speak(text, { rate: 1.0, pitch: 1.0 });
+export function speak(text: string, volumeHint?: 'whisper' | 'normal' | 'shout'): void {
+  let rate = 1.0;
+  let pitch = 1.0;
+  if (volumeHint === 'whisper') {
+    rate = 0.7;
+    pitch = 0.8;
+  } else if (volumeHint === 'shout') {
+    rate = 1.3;
+    pitch = 1.2;
+  }
+  Speech.speak(text, { rate, pitch });
+}
+
+export function getVolumeHint(audioSample: Float32Array): 'whisper' | 'normal' | 'shout' {
+  let sum = 0;
+  for (let i = 0; i < audioSample.length; i++) {
+    sum += audioSample[i] * audioSample[i];
+  }
+  const rms = Math.sqrt(sum / audioSample.length);
+  if (rms < 0.05) return 'whisper';
+  if (rms > 0.25) return 'shout';
+  return 'normal';
+}
+
+export async function saveConversationEntry(entry: { role: 'user' | 'assistant'; text: string; timestamp: number }): Promise<void> {
+  return new Promise((resolve, reject) => {
+    db.transaction((tx) => {
+      tx.executeSql(
+        'INSERT INTO conversations (role, text, timestamp) VALUES (?, ?, ?)',
+        [entry.role, entry.text, entry.timestamp],
+        () => resolve(),
+        (_t, err) => {
+          reject(err);
+          return false;
+        }
+      );
+    });
+  });
+}
+
+export async function getConversationHistory(): Promise<Array<{ role: string; text: string; timestamp: number }>> {
+  return new Promise((resolve) => {
+    db.transaction((tx) => {
+      tx.executeSql(
+        'SELECT role, text, timestamp FROM conversations ORDER BY timestamp DESC LIMIT 15',
+        [],
+        (_t, results) => {
+          const history = [];
+          for (let i = 0; i < results.rows.length; i++) {
+            const row = results.rows.item(i);
+            history.push({ role: row.role, text: row.text, timestamp: row.timestamp });
+          }
+          resolve(history);
+        },
+        () => {
+          resolve([]);
+          return false;
+        }
+      );
+    });
+  });
+}
+
+export async function clearConversationHistory(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    db.transaction((tx) => {
+      tx.executeSql('DELETE FROM conversations', [], () => resolve(), (_t, err) => {
+        reject(err);
+        return false;
+      });
+    });
+  });
 }
 
 export async function shareText(text: string): Promise<string> {
