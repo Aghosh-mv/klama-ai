@@ -213,6 +213,12 @@ export async function runAction(text: string): Promise<ActionResult> {
     return { handled: true, message: msg };
   }
 
+  const stopMatch = lower.match(/stop word (is|set to) (.+)/);
+  if (stopMatch) {
+    const msg = setStopWord(stopMatch[2].trim());
+    return { handled: true, message: msg };
+  }
+
   if (/(run|do) (my )?routine/.test(lower)) {
     const steps = (aiAssistant.getMemory('routine') || '')
       .split('|')
@@ -410,6 +416,53 @@ export function setAssistantName(name: string): string {
 
 export function getAssistantName(): string {
   return aiAssistant.getMemory('assistant_name') || 'Klama';
+}
+
+// --- Stop word (user says it to trigger the answer) ---
+
+export function setStopWord(word: string): string {
+  aiAssistant.setMemory('stop_word', word.toLowerCase().trim());
+  return `Stop word set to "${word}". I'll only answer after you say it.`;
+}
+
+export function getStopWord(): string {
+  return aiAssistant.getMemory('stop_word') || 'pip';
+}
+
+// --- On-device speech-to-text (Android) ---
+
+export async function listenOnce(prompt = 'Speak your command'): Promise<string | null> {
+  if (Platform.OS !== 'android') {
+    return null; // iOS: STT needs a native module; fall back to text input
+  }
+  try {
+    const result = await IntentLauncher.startActivityAsync(
+      'android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH',
+      {
+        // @ts-ignore - extra keys passed through
+        extra: {
+          'android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL':
+            'android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM',
+          'android.speech.RecognizerIntent.EXTRA_PROMPT': prompt,
+          'android.speech.RecognizerIntent.EXTRA_MAX_RESULTS': 1,
+        },
+      }
+    );
+    const results = result?.data?.['android.speech.extra.RESULTS'];
+    if (Array.isArray(results) && results.length) return results[0] as string;
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Extract the command spoken BEFORE the stop word.
+export function extractCommand(transcript: string): string {
+  const stop = getStopWord().toLowerCase();
+  const lower = transcript.toLowerCase();
+  const idx = lower.lastIndexOf(stop);
+  if (idx < 0) return transcript.trim();
+  return transcript.slice(0, idx).trim();
 }
 
 export async function capabilitiesList(): string {

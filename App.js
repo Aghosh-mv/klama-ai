@@ -16,7 +16,7 @@ import * as Location from 'expo-location';
 
 import WakeWordService, { WakeWordEvent } from './src/wakeWordService';
 import { aiAssistant } from './src/AIAssistant';
-import { runAction, GameSpec, speak, getAssistantName } from './src/tools';
+import { runAction, GameSpec, speak, getAssistantName, listenOnce, extractCommand, getStopWord } from './src/tools';
 
 const MODEL_DIR = 'assets/models';
 
@@ -100,55 +100,51 @@ export default function App() {
 
   const handleWakeWord = useCallback(async (event: WakeWordEvent) => {
     setWakeWordDetected(true);
-    setStatusText(`Wake word detected! (${event.detectedWord})`);
-    setConversation(prev => [...prev, `Wake word: ${event.detectedWord} (${event.probability.toFixed(2)})`]);
+    setStatusText(`${event.detectedWord} heard — say "${getStopWord()}" to send`);
+    setConversation(prev => [
+      ...prev,
+      `${event.detectedWord} woke up. Listening until stop word...`,
+    ]);
+    speak(`Yes? Say ${getStopWord()} when you're done.`);
 
-    // Start recording user command
-    try {
-      const { recording } = await Audio.Recording.makeAsync({
-        audio: {
-          sampleRate: 16000,
-          channelNumber: 1,
-          encoding: 'PCM_16BIT',
-        },
-        android: { audioSource: 'DEFAULT' },
-        ios: { audioSource: 'DEFAULT' },
-      });
+    setIsListening(true);
 
-      await recording.prepareToRecordAsync();
-      await recording.startAsync();
+    // On-device speech-to-text, then gate on the stop word.
+    const transcript = await listenOnce('Speak, then say ' + getStopWord());
+    setIsListening(false);
 
-      setIsListening(true);
-
-      // Record for 3 seconds
-      const timeoutId = setTimeout(async () => {
-        await recording.stopAndUnloadAsync();
-        const buffer = await recording.getContentsAsync();
-        const pcmData = buffer.data;
-
-        const float32Data = new Float32Array(pcmData.length);
-        for (let i = 0; i < pcmData.length; i++) {
-          float32Data[i] = pcmData[i] / 32768.0;
-        }
-
-        if (modelPaths) {
-          const result = await Openwakeword.processBuffer(float32Data, modelPaths);
-
-          if (result && result.isWakingWord) {
-            // Placeholder command — replace with real STT later.
-            // For now we demonstrate the action layer with a sample prompt.
-            await sendToAI('What time is it?');
-          }
-        }
-        setIsListening(false);
-      }, 3000);
-
-      return () => clearTimeout(timeoutId);
-    } catch (err) {
-      console.error('Recording error:', err);
-      setIsListening(false);
+    if (!transcript) {
+      setStatusText('Did not catch that.');
+      return;
     }
-  }, [modelPaths]);
+
+    const command = extractCommand(transcript);
+    if (!command) {
+      setStatusText('Heard stop word but no command.');
+      return;
+    }
+
+    setConversation(prev => [...prev, 'You: ' + command]);
+    const acted = await handleAction(command);
+    if (!acted) {
+      if (!apiKey) {
+        Alert.alert('Need API key', 'Enter your AI API key to chat.');
+        setStatusText('Ready');
+        return;
+      }
+      setStatusText('Processing...');
+      const response = await aiAssistant.respond(command);
+      if (response) {
+        setConversation(prev => [
+          ...prev,
+          getAssistantName() + ': ' + response.text,
+        ]);
+        speak(response.text);
+        await aiAssistant.scheduleNotification('Klama AI', response.text, 5);
+      }
+      setStatusText('Ready');
+    }
+  }, [apiKey, handleAction]);
 
   const handleAction = useCallback(async (text: string) => {
     const action = await runAction(text);
@@ -324,12 +320,7 @@ export default function App() {
   );
 }
 
-function GamePanel({ game, feedback, setFeedback, onClose }: {
-  game: GameSpec;
-  feedback: string;
-  setFeedback: (s: string) => void;
-  onClose: () => void;
-}) {
+function GamePanel({ game, feedback, setFeedback, onClose }) {
   const [guess, setGuess] = useState('');
   const [rpsChoice, setRpsChoice] = useState('');
 
