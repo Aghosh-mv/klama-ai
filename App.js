@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,8 +9,6 @@ import {
   FlatList,
   TextInput,
   Platform,
-  Modal,
-  Pressable,
   KeyboardAvoidingView,
   Keyboard,
   TouchableWithoutFeedback,
@@ -36,6 +34,8 @@ import {
   setAssistantName,
   setStopWord,
 } from './src/tools';
+import GamePanel from './src/GamePanel';
+import SetupWizard from './src/SetupWizard';
 import GamePanel from './src/GamePanel';
 import SetupWizard from './src/SetupWizard';
 
@@ -117,25 +117,37 @@ export default function App() {
   }, []);
 
   const handleSetupComplete = useCallback((settings) => {
-    const { apiKey: key, assistantName, wakeWord, stopWord } = settings;
-
-    if (!key || !assistantName || !wakeWord) {
+    if (!settings.apiKey || !settings.assistantName || !settings.wakeWord) {
       Alert.alert('Setup Incomplete', 'Please fill in all required fields');
       return;
     }
 
-    setAPIKey(key);
-    setAssistantName(assistantName);
-    if (stopWord) setStopWord(stopWord);
+    setAPIKey(settings.apiKey);
+    setAssistantName(settings.assistantName);
 
-    aiAssistant.setMemory('api_key', key);
-    aiAssistant.setMemory('assistant_name', assistantName);
-    aiAssistant.setMemory('wake_word', wakeWord);
+    // Save all settings
+    aiAssistant.setMemory('api_key', settings.apiKey);
+    aiAssistant.setMemory('assistant_name', settings.assistantName);
+    aiAssistant.setMemory('wake_word', settings.wakeWord);
     aiAssistant.setMemory('setup_complete', 'true');
+    aiAssistant.setMemory('response_style', settings.responseStyle);
+    aiAssistant.setMemory('humor_level', settings.humorLevel);
+    aiAssistant.setMemory('voice_style', settings.voiceStyle);
+    aiAssistant.setMemory('formality', settings.formality);
+    aiAssistant.setMemory('privacy_level', settings.privacyLevel);
+    aiAssistant.setMemory('notification_style', settings.notificationStyle);
+    aiAssistant.setMemory('always_listening', settings.alwaysListening);
+    aiAssistant.setMemory('location_services', settings.locationServices);
+    aiAssistant.setMemory('theme_color', settings.themeColor);
+    aiAssistant.setMemory('startup_message', settings.startupMessage);
+    aiAssistant.setMemory('custom_commands', settings.customCommands);
+
+    // Default: no stop word — process immediately after wake word
+    setStopWord('');
 
     setShowSetup(false);
     setAssistantReady(true);
-    loadModels(wakeWord);
+    loadModels(settings.wakeWord);
   }, []);
 
   const loadModels = useCallback(async (wordName) => {
