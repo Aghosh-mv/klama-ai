@@ -64,15 +64,36 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
       title: 'AI Brain Key',
       subtitle: "Got a Gemini API key? Drop it here — it's how I think 💡✨",
       field: () => (
-        <TextInput
-          style={styles.input}
-          placeholder="AIzaSy... (free from Google AI Studio)"
-          value={data.apiKey}
-          onChangeText={(v) => update('apiKey', v)}
-          secureTextEntry
-          placeholderTextColor="#888"
-        />
+        <View style={{ width: '100%' }}>
+          <TextInput
+            style={[styles.input, { backgroundColor: '#1a1a2e' }]}
+            placeholder="AIzaSy... (free from Google AI Studio)"
+            value={data.apiKey}
+            onChangeText={(v) => update('apiKey', v)}
+            placeholderTextColor="#888"
+            autoCapitalize="none"
+          />
+          <TouchableOpacity
+            style={styles.helpBtn}
+            onPress={() => {
+              Alert.alert(
+                'How to Get Your Free API Key',
+                '1. Go to https://aistudio.google.com/apikey\n' +
+                '2. Sign in with your Google account\n' +
+                '3. Click "Create API Key"\n' +
+                '4. Copy the key (starts with "AIza")\n' +
+                '5. Paste here and tap "Let\'s Go!" 🚀',
+                [{ text: 'Got it', style: 'cancel' }]
+              );
+            }}
+          >
+            <Text style={styles.helpBtnText}>💡 How do I get this?</Text>
+          </TouchableOpacity>
+        </View>
       ),
+      preview: data.apiKey
+        ? '✅ Key accepted! I can now think and chat.'
+        : '❌ I need a key to work — get one from Google AI Studio (free).',
     },
     {
       icon: 'account-star',
@@ -119,6 +140,9 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
           />
         </View>
       ),
+      preview: data.wakeWord
+        ? `✅ Wake word: "${data.wakeWord}" — I'll wake when I hear this`
+        : '❌ Pick or type a wake word so I can listen for you.',
     },
     {
       icon: 'robot-happy',
@@ -142,6 +166,7 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
           ))}
         </View>
       ),
+      preview: `🤖 Mode: ${data.responseStyle} | Humor: ${data.humorLevel}`,
     },
     {
       icon: 'shield-account',
@@ -167,6 +192,9 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
           </TouchableOpacity>
         </View>
       ),
+      preview: data.privacyLevel === 'session'
+        ? '🔒 I forget chats each session (more private)'
+        : '💾 I remember our chats (context-aware)',
     },
     {
       icon: 'flash-alert',
@@ -187,6 +215,7 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
           ))}
         </View>
       ),
+      preview: `🔔 Pings: ${data.notificationStyle === 'loud' ? 'LOUD' : data.notificationStyle === 'silent' ? 'Silent' : 'Gentle'}`,
     },
     {
       icon: 'earth',
@@ -212,6 +241,9 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
           </TouchableOpacity>
         </View>
       ),
+      preview: data.locationServices === 'true'
+        ? '📍 Yes — I can give weather for your area'
+        : '🙈 No — privacy mode (weather will be generic)',
     },
     {
       icon: 'eye',
@@ -229,6 +261,73 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
           <View style={[styles.colorPreview, { backgroundColor: data.themeColor || '#333' }]} />
         </View>
       ),
+      preview: data.themeColor
+        ? `🎨 Glow color set: ${data.themeColor}`
+        : '🎨 Pick a color — this is your assistant\'s brand',
+    },
+    {
+      icon: 'weather-sunset',
+      title: 'Coffee or Tea?',
+      subtitle: 'Tell me your daily fuel — I\'ll cheer you on ☕🍵',
+      field: () => (
+        <View style={styles.choiceGrid}>
+          {['coffee', 'tea', 'neither', 'both'].map((opt) => (
+            <TouchableOpacity
+              key={opt}
+              style={[styles.choiceBtn, data.dailyFuel === opt && styles.choiceSelected]}
+              onPress={() => update('dailyFuel', opt)}
+            >
+              <Text style={[styles.choiceText, data.dailyFuel === opt && styles.choiceTextSelected]}>
+                {opt === 'both' ? 'Both!' : opt.charAt(0).toUpperCase() + opt.slice(1)}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+      preview: data.dailyFuel
+        ? `✅ Got it — ${data.dailyFuel === 'both' ? 'you love both!' : 'you like ' + data.dailyFuel} `
+        : '❌ Pick one so I know your vibe 😄',
+    },
+    {
+      icon: 'weather-sunset',
+      title: 'Night Owl or Early Bird?',
+      subtitle: 'Are you team sunrise or team midnight? 🌙☀️',
+      field: () => (
+        <View style={styles.choiceGrid}>
+          {['early-bird', 'night-owl', 'both', 'neither'].map((opt) => (
+            <TouchableOpacity
+              key={opt}
+              style={[styles.choiceBtn, data.energyType === opt && styles.choiceSelected]}
+              onPress={() => update('energyType', opt)}
+            >
+              <Text style={[styles.choiceText, data.energyType === opt && styles.choiceTextSelected]}>
+                {opt === 'early-bird' ? 'Sunrise ☀️' : opt === 'night-owl' ? 'Midnight 🌙' : opt === 'both' ? 'Both' : 'No preference'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+      preview: data.energyType
+        ? `🌙 You're a ${data.energyType.replace('-', ' ')}`
+        : '❌ So I know when to be energetic vs chill',
+    },
+    {
+      icon: 'weather-sunset',
+      title: 'Your Vibe Check',
+      subtitle: 'What one word should describe my attitude today? (e.g., sassy, chill, hype)',
+      field: () => (
+        <TextInput
+          style={styles.input}
+          placeholder="sassy / chill / hype / professor-mode"
+          value={data.vibe}
+          onChangeText={(v) => update('vibe', v)}
+          placeholderTextColor="#888"
+        />
+      ),
+      preview: data.vibe
+        ? `🎭 Vibe set: ${data.vibe} — I\'ll match that`
+        : '❌ One word — how I should act today',
+    },
     },
     {
       icon: 'chat-sleep',
@@ -318,6 +417,11 @@ export default function SetupWizard({ visible, onComplete, onSkip }) {
               <Text style={styles.questionTitle}>{current.title}</Text>
               <Text style={styles.questionSubtitle}>{current.subtitle}</Text>
               {current.field()}
+              {current.preview ? (
+                <View style={styles.previewBox}>
+                  <Text style={styles.previewText}>{current.preview}</Text>
+                </View>
+              ) : null}
             </View>
 
             {/* Navigation */}
@@ -433,4 +537,18 @@ const styles = StyleSheet.create({
   navBtnTextGhost: { color: '#aaa' },
   navBtnTextPrimary: { color: '#1a1a2e', fontWeight: 'bold' },
   skipText: { color: '#666', fontSize: 14 },
+  helpBtn: {
+    backgroundColor: '#1a1a2e',
+    borderRadius: 12,
+    padding: 10,
+    marginTop: 8,
+  },
+  helpBtnText: { color: '#00d4ff', fontSize: 13, textAlign: 'center' },
+  previewBox: {
+    backgroundColor: 'rgba(0, 212, 255, 0.1)',
+    borderRadius: 12,
+    padding: 10,
+    marginTop: 12,
+  },
+  previewText: { color: '#fff', fontSize: 13, textAlign: 'center' },
 });
